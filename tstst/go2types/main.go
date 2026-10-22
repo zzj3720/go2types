@@ -993,6 +993,18 @@ func (c *compiler) emitProgram(roots []*ssa.Function) string {
 	return b.String()
 }
 
+// G2T_NAMES=<file>: the Go function of each F<id> alias, a line each (for
+// profiles of the compiled program)
+var namesOut = func() *os.File {
+	if p := os.Getenv("G2T_NAMES"); p != "" {
+		if f, err := os.Create(p); err == nil {
+			return f
+		}
+	}
+	return nil
+}()
+var namesDone = map[int]bool{}
+
 func (c *compiler) fname(f *ssa.Function) string {
 	id, ok := c.funcID[f]
 	if !ok && c.sameWrapper(f) != nil {
@@ -1002,6 +1014,10 @@ func (c *compiler) fname(f *ssa.Function) string {
 		id = c.newID(funcText(f))
 		c.funcID[f] = id
 		c.funcs = append(c.funcs, f)
+	}
+	if namesOut != nil && !namesDone[id] {
+		namesDone[id] = true
+		fmt.Fprintf(namesOut, "F%s\t%s\n", strconv.FormatInt(int64(id), 36), f.String())
 	}
 	return "F" + strconv.FormatInt(int64(id), 36)
 }
@@ -1332,6 +1348,43 @@ func (c *compiler) floatConst(cv *ssa.Const) string {
 	return floatLit(f)
 }
 
+// a map key as the map stores it: Go's == takes -0 for 0, the maps compare
+// keys by their bits, so float keys (also in struct keys) are stored as x + 0,
+// which is x but for -0 (a -0 put first comes back from range as 0, where Go
+// keeps the key it was given; NaN keys still find each other)
+func mapKey(k string, t types.Type) string {
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		if u.Info()&types.IsFloat != 0 {
+			return fmt.Sprintf("g.fadd<%s, 0n>", k)
+		}
+	case *types.Struct:
+		if !hasFloat(u) {
+			return k
+		}
+		parts := make([]string, u.NumFields())
+		for i := range parts {
+			parts[i] = mapKey(fmt.Sprintf("g.tget<%s, %s>", k, intLit(int64(i))), u.Field(i).Type())
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
+	return k
+}
+
+func hasFloat(t types.Type) bool {
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		return u.Info()&types.IsFloat != 0
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if hasFloat(u.Field(i).Type()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func isFloat(t types.Type) bool {
 	if b, ok := t.Underlying().(*types.Basic); ok {
 		return b.Info()&types.IsFloat != 0
@@ -1548,6 +1601,7 @@ func (c *compiler) emitFuncAs(b *strings.Builder, f *ssa.Function, r bool) {
 	fs.foldConstants()
 	fs.liftLocals()
 	fs.fuseFields()
+	fs.dropReloads()
 	fs.byValueLoads()
 	fs.computeLiveness()
 	if fs.hasDefer {
@@ -2401,7 +2455,7 @@ func (fs *fstate) instr(bs *bstate, ins ssa.Instruction) string {
 		}
 		return ""
 	case *ssa.MapUpdate:
-		bs.setHeapChecked(fmt.Sprintf("g.mupdate<%s, %s, %s, %s>", bs.heap, fs.val(x.Map), fs.val(x.Key), fs.val(x.Value)))
+		bs.setHeapChecked(fmt.Sprintf("g.mupdate<%s, %s, %s, %s>", bs.heap, fs.val(x.Map), mapKey(fs.val(x.Key), x.Key.Type()), fs.val(x.Value)))
 		return ""
 	case *ssa.Send:
 		elem := x.Chan.Type().Underlying().(*types.Chan).Elem()
@@ -2562,10 +2616,11 @@ func (fs *fstate) instr(bs *bstate, ins ssa.Instruction) string {
 			bs.bindChecked(fmt.Sprintf("g.sat<%s, %s>", fs.val(x.X), fs.val(x.Index)), name)
 		} else {
 			elem := x.X.Type().Underlying().(*types.Map).Elem()
+			k := mapKey(fs.val(x.Index), x.Index.Type())
 			if x.CommaOk {
-				bs.bindTuple(fmt.Sprintf("g.mlookup2<%s, %s, %s, %s>", bs.heap, fs.val(x.X), fs.val(x.Index), c.zero(elem)), name+"_0", name+"_1")
+				bs.bindTuple(fmt.Sprintf("g.mlookup2<%s, %s, %s, %s>", bs.heap, fs.val(x.X), k, c.zero(elem)), name+"_0", name+"_1")
 			} else {
-				bs.bind(fmt.Sprintf("g.mlookup<%s, %s, %s, %s>", bs.heap, fs.val(x.X), fs.val(x.Index), c.zero(elem)), name)
+				bs.bind(fmt.Sprintf("g.mlookup<%s, %s, %s, %s>", bs.heap, fs.val(x.X), k, c.zero(elem)), name)
 			}
 		}
 	case *ssa.MakeMap:
@@ -3252,6 +3307,7 @@ func (fs *fstate) inline(bs *bstate, f *ssa.Function, args []ssa.Value) string {
 	sub.foldConstants()
 	sub.liftLocals()
 	sub.fuseFields()
+	sub.dropReloads()
 	sub.computeLiveness()
 	return sub.blockExpr(&bstate{fs: sub, heap: bs.heap, hn: bs.hn, tmp: bs.tmp, depth: bs.depth + bs.opens + 1}, f.Blocks[0])
 }
@@ -3420,7 +3476,7 @@ func (fs *fstate) builtin(bs *bstate, b *ssa.Builtin, args []ssa.Value, res []st
 		et := args[0].Type().Underlying().(*types.Slice).Elem()
 		bs.call(fmt.Sprintf("g.scopy<%s, %s, %s, %s>", bs.heap, fs.val(args[0]), fs.val(args[1]), intLit(c.cells(et))), res...)
 	case "delete":
-		bs.setHeap(fmt.Sprintf("g.mdelete<%s, %s, %s>", bs.heap, fs.val(args[0]), fs.val(args[1])))
+		bs.setHeap(fmt.Sprintf("g.mdelete<%s, %s, %s>", bs.heap, fs.val(args[0]), mapKey(fs.val(args[1]), args[1].Type())))
 	case "print", "println":
 		var parts []string
 		for i, a := range args {

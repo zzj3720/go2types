@@ -470,3 +470,29 @@ func (fs *fstate) bindPure(bs *bstate, v ssa.Value, expr, name string) {
 	}
 	bs.bind(expr, name)
 }
+
+// A value stored back right where it was just loaded from, and used for
+// nothing else, is neither loaded nor stored: go/ssa returns named results
+// so (t1 = *r; *r = t1; t2 = *r), and a load or a store of a struct or an
+// array copies all its cells (strings.makeASCIISet's [256]bool: three copies
+// of 256 cells a return, one left). (Not through a pointer that may be nil:
+// the load would have panicked.)
+func (fs *fstate) dropReloads() {
+	c := fs.c
+	for _, blk := range fs.fn.Blocks {
+		var prev ssa.Instruction
+		for _, ins := range blk.Instrs {
+			if _, ok := ins.(*ssa.DebugRef); ok {
+				continue
+			}
+			if st, ok := ins.(*ssa.Store); ok {
+				if ld, ok := st.Val.(*ssa.UnOp); ok && ld.Op == token.MUL && ld.X == st.Addr && prev == ld &&
+					len(*ld.Referrers()) == 1 && !mayBeNil(st.Addr) && !c.dropped[ld] && !c.dropped[st] && !fs.prebound[ld] {
+					c.dropped[ld] = true
+					c.dropped[st] = true
+				}
+			}
+			prev = ins
+		}
+	}
+}

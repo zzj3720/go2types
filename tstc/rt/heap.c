@@ -499,11 +499,25 @@ static Layout *parse_layout(const uint16_t *d, int32_t len, int32_t *pos) {
   die("bad layout descriptor");
 }
 
+static Layout *layout_of_text(Str *s);
+
 // layouts by descriptor text (they are few)
 typedef struct LCache { Str *key; Layout *l; struct LCache *next; } LCache;
 static LCache *lcache[256];
 
 static Layout *layout_of(Str *s) {
+  // the descriptors are the program's string constants (static objects, their
+  // code units right after them): found by address first
+  static struct { Str *s; Layout *l; } byaddr[1024];
+  bool st = s->buf->cap < 0 && (char *)s->buf == (char *)s + sizeof(Str);
+  uint32_t ai = (uint32_t)((uintptr_t)s >> 4) & 1023;
+  if (st && byaddr[ai].s == s) return byaddr[ai].l;
+  Layout *l = layout_of_text(s);
+  if (st) byaddr[ai].s = s, byaddr[ai].l = l;
+  return l;
+}
+
+static Layout *layout_of_text(Str *s) {
   uint32_t h = str_hash(s) & 255;
   for (LCache *c = lcache[h]; c; c = c->next)
     if (c->key == s || str_eq(c->key, s)) return c->l;

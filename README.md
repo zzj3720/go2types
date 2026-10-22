@@ -30,6 +30,20 @@ Against `microsoft/TypeScript` at `fed0bf24149f`:
 | fourslash (`internal/fourslash/tests`) | 4143 passed, 415 skipped (as `go test`), 1761 / 1761 baselines |
 | `go test` of 64 packages | 1286 passed, 3 failed (tests that start real processes or read files outside the harness) |
 
+## Real projects
+
+tsgo's own `tsc` command line, compiled the same way, checking the projects of
+[ts-checker-bench](https://github.com/danfry1/ts-checker-bench) at their
+pinned commits (`tstst/scripts/tsc_bench.sh`), against tsgo itself, both
+single-threaded, on an Apple M2 Max (64 GB). The diagnostics are byte for byte
+tsgo's on all three.
+
+| project | tsgo | type-level tsgo | ratio | peak memory (tsgo → type-level) |
+|---|---|---|---|---|
+| type-fest | 9.7 s | 66.9 s | 6.9× | 6.4 GB → 19.0 GB |
+| Outline | 7.9 s | 61.1 s | 7.8× | 2.1 GB → 7.8 GB |
+| VS Code | 20.8 s | 132.2 s | 6.4× | 7.3 GB → 23.7 GB |
+
 ## Quick start
 
 macOS arm64; Go 1.26+, [MoonBit](https://www.moonbitlang.com/), LLVM 22,

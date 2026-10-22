@@ -654,17 +654,7 @@ static void scan_gocells(char *p, size_t nb, bool cand) {
     // 32 cells share a word of kinds: all scalar ones (the usual case) only
     // look at their pointers
     if (!(i & 31) && i + 32 <= end) {
-      uint64_t kw = g->kinds[i >> 5];
-      const V *c = cells + i;
-      if (kw == 0) {
-        for (int k = 0; k < 32; k++)
-          if (!(c[k] & 3) && c[k]) gc_mark(c[k], true);
-      } else
-        for (int k = 0; k < 32; k++) {
-          V v = c[k];
-          if ((kw >> (2 * k)) & 3) gc_mark(v, true);
-          else if (!(v & 3) && v) gc_mark(v, true);
-        }
+      gc_mark_cells32(cells + i, g->kinds[i >> 5]);
       i += 32;
       continue;
     }

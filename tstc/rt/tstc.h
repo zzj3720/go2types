@@ -79,6 +79,7 @@ void gc_set_scanner(int flavor, GcScanner f);
 // marks what the value refers to; with cand, an integer in it may be a cell
 // index of the cell store (scanners use this for their fields)
 void gc_mark(V w, bool cand);
+void gc_mark_cells32(const V *c, uint64_t kw);  // 32 cells of the cell store and their word of kinds
 void gc_scan_range(void *p, size_t n, bool cand);
 // a range for the marking threads: n bytes at p, scanned by the flavor's
 // scanner (GC_CELLS: cells of the cell store); with the cells marked so far

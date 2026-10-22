@@ -47,11 +47,15 @@ typedef struct Chunk {
 static const uint32_t class_sizes[] = {
     16,   24,   32,   40,   48,   64,   80,   96,   112,  128,  160,  192,  224,  256,
     320,  384,  448,  512,  640,  768,  896,  1024, 1280, 1536, 2048, 2560,
-    3072, 4096, 5120, 6144, 8192, 10240, 12288, 16384, 20480, 24576, 32768};
-// objects up to a quarter of a chunk are small
-#define MAX_SMALL (CHUNK_SIZE / 4 < 32768 ? CHUNK_SIZE / 4 : 32768)
+    3072, 4096, 5120, 6144, 8192, 10240, 12288, 16384, 20480, 24576, 32768,
+    40960, 49152, 65536, 81920, 98304, 131072};
+// objects up to a quarter of a chunk (at most 128 KB) are small: a large
+// object has spans of whole chunks to itself, which for one of 33 KB is 31
+// times its size (type-fest's check had 5.5 GB of 1 MB spans for objects of
+// 32-64 KB holding 0.4 GB)
+#define MAX_SMALL (CHUNK_SIZE / 4 < 131072 ? CHUNK_SIZE / 4 : 131072)
 #define NCLS_ALL (sizeof(class_sizes) / sizeof(class_sizes[0]))
-#define NCLS (CHUNK_SHIFT >= 17 ? NCLS_ALL : CHUNK_SHIFT == 16 ? NCLS_ALL - 3 : 0)
+#define NCLS (CHUNK_SHIFT >= 16 ? NCLS_ALL : 0)
 static uint8_t cls_of_8[MAX_SMALL / 8 + 1];  // (size + 7) / 8 -> class
 
 // chunks with free objects (their marks say which), allocated from only when
@@ -94,6 +98,7 @@ static bool next_run(Alloc *a, uint32_t size) {
   a->free = b + len >= 64 ? 0 : a->free & (~(uint64_t)0 << (b + len));
   a->cur = c->data + ((size_t)a->w * 64 + (size_t)b) * size;
   a->end = a->cur + (size_t)len * size;
+  gc_grown_since += (size_t)len * size;
   // the whole run zeroed at once (memset clears whole cache lines without
   // reading them first)
   memset(a->cur, 0, (size_t)(a->end - a->cur));
@@ -134,7 +139,10 @@ static Chunk **ctab;           // chunk index -> chunk (large: the head)
 static uintptr_t ctab_lo, ctab_hi;  // chunk indices covered
 static size_t heap_bytes;      // bytes in chunks in use
 static size_t pool_bytes, large_bytes;  // bytes of free chunks; of large objects' spans
-size_t gc_grown_since;  // bytes of chunks added since the last collection
+// bytes handed out since the last collection: runs of free objects of the
+// chunks in use as much as new chunks (counting only new chunks, the heap
+// grew by a whole budget each cycle on top of the free space it reused)
+size_t gc_grown_since;
 static size_t threshold = (size_t)64 << 20;
 size_t gc_due_at = ((size_t)64 << 20) / 4 * 3;  // gc_due() past it (threshold / 4 * 3)
 static void set_threshold(size_t t) {
@@ -259,8 +267,8 @@ static Chunk *new_small_chunk(uint32_t cls, int flavor) {
       if (!c) fatal("out of memory");
     }
     ctab_set(c, CHUNK_SIZE, c);
-    gc_grown_since += CHUNK_SIZE;
   }
+  gc_grown_since += CHUNK_SIZE;
   heap_bytes += CHUNK_SIZE;
   uint32_t size = class_sizes[cls];
   // header + mark bits, then objects
@@ -476,8 +484,7 @@ static __attribute__((noinline)) void grow_stack(MarkCtx *c) {
   if (!c->st) fatal("out of memory (mark stack)");
 }
 
-static inline void push_range(char *p, size_t n, uint8_t flavor) {
-  MarkCtx *c = mc;
+static inline void push_range_x(MarkCtx *c, char *p, size_t n, uint8_t flavor) {
   c->pushes++;
   if (__builtin_expect(c->sp == c->cap, 0)) grow_stack(c);
   c->st[c->sp].p = p;
@@ -485,15 +492,17 @@ static inline void push_range(char *p, size_t n, uint8_t flavor) {
   c->sp++;
 }
 
+static inline void push_range(char *p, size_t n, uint8_t flavor) { push_range_x(mc, p, n, flavor); }
+
 void gc_push_range(void *p, size_t n, int flavor) { push_range(p, n, (uint8_t)flavor); }
 
-static inline void commit(const Pend *p) {
+static inline void commit(MarkCtx *c, const Pend *p) {
   uint64_t old = __atomic_fetch_or(p->mw, p->bit, __ATOMIC_RELAXED);
   if (old & p->bit) return;
   if (p->flavor != GC_ATOMIC) {
     // the object is scanned soon (after a few others): fetch it now
     __builtin_prefetch(p->o);
-    push_range(p->o, p->size, p->flavor);
+    push_range_x(c, p->o, p->size, p->flavor);
   }
 }
 
@@ -502,11 +511,13 @@ static inline bool commit_one(MarkCtx *c) {
   Pend e = c->pend[c->ph];
   c->ph = (c->ph + 1) % PR;
   c->pn--;
-  commit(&e);
+  commit(c, &e);
   return true;
 }
 
-static inline void mark_word(uintptr_t a) {
+// (the marking thread's context passed down: reading the thread-local one
+// for each word was a call on macOS)
+static inline void mark_word(MarkCtx *x, uintptr_t a) {
   uintptr_t ci = a >> CHUNK_SHIFT;
   if (ci - ctab_lo >= ctab_hi - ctab_lo) return;
   Chunk *c = ctab[ci - ctab_lo];
@@ -515,7 +526,7 @@ static inline void mark_word(uintptr_t a) {
   if (c->cls == LARGE_CLS) {
     if ((char *)a >= c->data + c->large || c->marked) return;
     if (__atomic_exchange_n(&c->marked, 1, __ATOMIC_RELAXED)) return;
-    if (c->flavor != GC_ATOMIC) push_range(c->data, c->large, c->flavor);
+    if (c->flavor != GC_ATOMIC) push_range_x(x, c->data, c->large, c->flavor);
     return;
   }
   uint64_t off = a - (uintptr_t)c->data;
@@ -523,7 +534,6 @@ static inline void mark_word(uintptr_t a) {
   if (i >= c->nobj) return;
   uint64_t *mw = &c->mark[i >> 6], bit = (uint64_t)1 << (i & 63);
   __builtin_prefetch(mw);
-  MarkCtx *x = mc;
   if (x->pn == PR) commit_one(x);
   x->pend[(x->ph + x->pn) % PR] = (Pend){mw, bit, c->data + (size_t)i * c->size, c->size, c->flavor};
   x->pn++;
@@ -531,39 +541,57 @@ static inline void mark_word(uintptr_t a) {
 
 // an integer that may be a cell index: the cell store's quick answer first (an
 // object's first cell, already marked), then its full one
-static inline void cand_word(int64_t n) {
+static inline void cand_word(MarkCtx *x, int64_t n) {
   if (n < gc_cand_lo || n >= gc_cand_hi) return;
-  mc->cands++;
+  x->cands++;
   if (gc_cells_fast.start) {
     uint64_t b = (uint64_t)1 << (n & 63);
     if ((gc_cells_fast.mark[n >> 6] & b) && (gc_cells_fast.start[n >> 6] & b)) {
-      mc->candfast++;
+      x->candfast++;
       return;
     }
   }
   cell_hooks->cand(n);
 }
 
-static inline void scan_word(uintptr_t w) {
+static inline void scan_word(MarkCtx *x, uintptr_t w) {
   if (w & 1) {
-    if (mark_cand) cand_word((int64_t)w >> 1);
+    if (mark_cand) cand_word(x, (int64_t)w >> 1);
     return;
   }
-  mark_word(w);
+  mark_word(x, w);
 }
 
 void gc_mark(V w, bool cand) {
   (void)cand;
-  scan_word(w);
+  scan_word(mc, w);
+}
+
+// 32 cells of the cell store and their word of kinds (2 bits a cell, not 0:
+// a value that may hold cell indices): the pointers, and the cells of such
+// kinds, marked (cellgc.c's scanner, one call for them)
+void gc_mark_cells32(const V *c, uint64_t kw) {
+  MarkCtx *x = mc;
+  if (kw == 0) {
+    for (int k = 0; k < 32; k++)
+      if (!(c[k] & 3) && c[k]) mark_word(x, c[k]);
+    return;
+  }
+  for (int k = 0; k < 32; k++) {
+    V v = c[k];
+    if ((kw >> (2 * k)) & 3) scan_word(x, v);
+    else if (!(v & 3) && v) mark_word(x, v);
+  }
 }
 
 void gc_add_marked_cells(int64_t n) { mc->cells_marked += n; }
 
 static void scan(char *p, size_t n) {
-  mc->scanned += n;
+  MarkCtx *x = mc;
+  x->scanned += n;
   uintptr_t *w = (uintptr_t *)(((uintptr_t)p + 7) & ~(uintptr_t)7);
   uintptr_t *end = (uintptr_t *)(p + n);
-  for (; w < end; w++) scan_word(*w);
+  for (; w < end; w++) scan_word(x, *w);
 }
 
 void gc_scan_range(void *p, size_t n, bool cand) {
