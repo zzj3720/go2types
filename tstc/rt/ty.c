@@ -704,7 +704,7 @@ static bool ty_eq_s(V a, V b, int ka) {
     SetT *x = (SetT *)a, *y = (SetT *)b;
     if (x->n != y->n) return false;
     for (uint32_t i = 0; i < x->n; i++)
-      if (!union_has(y->m, y->n, x->m[i])) return false;
+      if (!set_has(b, x->m[i])) return false;
     return true;
   }
   case K_INTER: {
@@ -723,12 +723,52 @@ static bool ty_eq_s(V a, V b, int ka) {
 // ---------------------------------------------------------------------------
 // Unions
 
+static uint32_t lit_hash(V t);
+
 static V mk_set(int tag, const V *m, uint32_t n) {
   SetT *s = gc_alloc(sizeof(SetT) + (size_t)n * 8);
   s->tag = (uint32_t)tag;
   s->n = n;
   memcpy(s->m, m, (size_t)n * 8);
+  if (tag == K_UNION && n > 16) {
+    uint32_t cap = 64;
+    while (cap < n * 2) cap *= 2;
+    int32_t *ix = gc_alloc_atomic((size_t)(cap + 2) * 4);
+    memset(ix + 2, 0xFF, (size_t)cap * 4);
+    ix[0] = (int32_t)cap;
+    ix[1] = 1;
+    for (uint32_t i = 0; i < n; i++) {
+      if (ty_flags(m[i]) & TF_NOT_PRIMITIVE_UNION) ix[1] = 0;
+      uint32_t k = lit_hash(m[i]) & (cap - 1);
+      while (ix[2 + k] >= 0) k = (k + 1) & (cap - 1);
+      ix[2 + k] = (int32_t)i;
+    }
+    s->ix = ix;
+  }
   return (V)s;
+}
+
+bool set_has(V u, V t) {
+  SetT *s = (SetT *)u;
+  if (!s->ix) {
+    for (uint32_t i = 0; i < s->n; i++)
+      if (s->m[i] == t || ty_eq(s->m[i], t)) return true;
+    return false;
+  }
+  uint32_t cap = (uint32_t)s->ix[0], k = lit_hash(t) & (cap - 1);
+  for (; s->ix[2 + k] >= 0; k = (k + 1) & (cap - 1)) {
+    V x = s->m[s->ix[2 + k]];
+    if (x == t || ty_eq(x, t)) return true;
+  }
+  return false;
+}
+
+bool set_prim_union(V u) {
+  SetT *s = (SetT *)u;
+  if (s->ix) return s->ix[1];
+  for (uint32_t i = 0; i < s->n; i++)
+    if (ty_flags(s->m[i]) & TF_NOT_PRIMITIVE_UNION) return false;
+  return true;
 }
 
 static inline uint64_t hmix(uint64_t h, uint64_t x) {
@@ -957,16 +997,10 @@ static uint32_t add_to_inter(VA *set, uint32_t inc, V t) {
   return inc | (f & TF_INCLUDES_MASK);
 }
 
-static bool is_primitive_union(V t) {
-  if (kind(t) != K_UNION) return false;
-  for (uint32_t i = 0; i < set_n(t); i++)
-    if (ty_flags(set_m(t, i)) & TF_NOT_PRIMITIVE_UNION) return false;
-  return true;
-}
+static bool is_primitive_union(V t) { return kind(t) == K_UNION && set_prim_union(t); }
 
 static bool union_contains(V u, V t) {
-  for (uint32_t i = 0; i < set_n(u); i++)
-    if (ty_eq(set_m(u, i), t)) return true;
+  if (set_has(u, t)) return true;
   V prim = 0;
   switch (kind(t)) {
   case K_STRLIT: prim = V_STRING; break;

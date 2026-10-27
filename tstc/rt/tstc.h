@@ -167,7 +167,12 @@ typedef struct { uint32_t tag, aux; double d; } NumT;
 typedef struct { uint32_t tag, aux; Str *s; } BigT;  // decimal text beyond int64
 typedef struct { uint32_t tag, n; Str **texts; V *types; } TplT;  // n types, n+1 texts
 typedef struct { uint32_t tag, ro; V el; } ArrT;
-typedef struct { uint32_t tag, n; V m[]; } SetT;  // union / intersection members
+// union / intersection members (ix: a big union's index of its members by
+// their hashes after its size and whether it is a union of primitives, or
+// NULL)
+typedef struct { uint32_t tag, n; int32_t *ix; V m[]; } SetT;
+bool set_has(V u, V t);       // (a member of the union ty_eq to t)
+bool set_prim_union(V u);     // (no member any, unknown, void, never, object, intersection or instantiable)
 typedef struct { uint32_t tag, aux; int64_t id; } USymT;
 typedef struct { uint32_t tag, aux; V c, e, t, f; } DefT;
 // Uppercase<T> (mode 0), Lowercase (1), Capitalize (2), Uncapitalize (3) of a

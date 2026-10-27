@@ -85,9 +85,7 @@ bool is_empty_anon_obj(V t) { return is_empty_obj(t) && !(as_obj(t)->aux & (OBJ_
 
 static bool union_has(V u, V t) {
   if (kind(u) != K_UNION) return same(u, t);
-  for (uint32_t i = 0; i < set_n(u); i++)
-    if (same(set_m(u, i), t)) return true;
-  return false;
+  return set_has(u, t);
 }
 
 // isUnknownLikeUnionType: undefined | null | {} (and more)
@@ -1139,10 +1137,7 @@ static bool union_or_inter_related(V s, V t, int R, int ist) {
     uint32_t sf = ty_flags(s);
     if (sf & (TF_STRLIT | TF_BOOLLIT | TF_BIGLIT | (R == R_STRICT ? TF_NUMLIT : 0))) {
       // a literal against a union of primitives: its base type or itself
-      bool prim_union = true;
-      for (uint32_t i = 0; i < set_n(t) && prim_union; i++)
-        if (ty_flags(set_m(t, i)) & TF_NOT_PRIMITIVE_UNION) prim_union = false;
-      if (prim_union) {
+      if (set_prim_union(t)) {
         V base = (sf & TF_STRLIT) ? V_STRING : (sf & TF_NUMLIT) ? V_NUMBER : (sf & TF_BIGLIT) ? V_BIGINT : 0;
         return base && union_has(t, base);
       }
