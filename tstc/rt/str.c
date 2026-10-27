@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static StrBuf empty_buf = {0, -1, NULL};
+static StrBuf empty_buf = {0, -1, NULL, 0, 0};
 static Str empty_str = {K_STRLIT, 0, 0, 0, &empty_buf};
 Str *str_empty = &empty_str;
 
@@ -150,8 +150,9 @@ static Str *str_with_room(int32_t front, int32_t n, int32_t back) {
   return &x->s;
 }
 
-// (a room of as much again, within int32 code units)
-static int32_t room_for(int64_t n) { return n > INT32_MAX / 2 ? (int32_t)(INT32_MAX - n) : (int32_t)n; }
+// (a room of half as much again, within int32 code units: growing by half
+// keeps joins amortized and a big text's buffer from doubling)
+static int32_t room_for(int64_t n) { int64_t r = n / 2 + 16; return n + r > INT32_MAX ? (int32_t)(INT32_MAX - n) : (int32_t)r; }
 
 // Joined: in place after a when a ends its buffer, or before b when b
 // begins its buffer; otherwise a buffer of their own with room on the side

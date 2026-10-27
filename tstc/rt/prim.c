@@ -294,7 +294,7 @@ V n_bytestr(V cv) {
   Str *s = &byte_strs[c];
   if (!s->buf) {
     byte_units[c] = c;
-    byte_bufs[c] = (StrBuf){1, -1, &byte_units[c]};
+    byte_bufs[c] = (StrBuf){1, -1, &byte_units[c], 0, 0};
     *s = (Str){K_STRLIT, 0, 0, 1, &byte_bufs[c]};
   }
   return (V)s;
