@@ -176,11 +176,16 @@ V index_access(V o, V k) {
     for (uint32_t i = 0; i < u->n; i++) r[i] = index_access(u->m[i], k);
     return mk_union(r, u->n);
   }
-  // an element of a tuple of required elements
-  if (ko == K_TUPLE && kk == K_NUMLIT && tup_nokinds(as_tup(o))) {
-    double d = num_val(k);
+  // an element of a tuple of required elements, or its length (by number or
+  // by name: the members of the tuple are not made for one of them)
+  if (ko == K_TUPLE && (kk == K_NUMLIT || kk == K_STRLIT) && tup_nokinds(as_tup(o))) {
     TupT *t = as_tup(o);
-    if (d >= 0 && d < t->len && d == (double)(uint32_t)d) return t->e[(uint32_t)d];
+    double d;
+    bool idx = true;
+    if (kk == K_NUMLIT) d = num_val(k);
+    else if (str_eq_c(as_str(k), "length")) return mk_num(t->len);
+    else idx = parse_canonical_number(as_str(k), &d);
+    if (idx && d >= 0 && d < t->len && d == (double)(uint32_t)d) return t->e[(uint32_t)d];
   }
   if (string_index_only(o) && !(ty_flags(k) & TF_NULLABLE) && assignable_to_kind(k, TF_STRING | TF_NUMBER)) k = V_STRING;
   if (kind(k) == K_UNION && !(ty_flags(k) & TF_BOOLEAN)) {
