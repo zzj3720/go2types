@@ -128,7 +128,7 @@ static uint8_t *read_all(const char *path, size_t *n) {
 static void usage(void) {
   fprintf(stderr,
           "usage:\n"
-          "  %s run [--entry Main] [--arg-file path]... [--arg text]... [--out path] [--bytes] [--stats]\n"
+          "  %s run [--entry Main] [--arg-file path]... [--arg text]... [--out path] [--units dir] [--bytes] [--stats]\n"
           "  %s dump      print every parameterless type alias of the program\n",
           g_argv[0], g_argv[0]);
   exit(2);
@@ -154,25 +154,58 @@ static void str_emit(Str *s) {
   free(b);
 }
 
-// a string, or a tuple of strings (pieces of a text too long to join),
-// written; false when r is neither
-static bool emit_pieces(V r) {
-  if (kind(r) == K_STRLIT) {
-    str_emit(as_str(r));
-    return true;
-  }
+// a text: a string, or a tuple of texts (pieces of a text too long to
+// join)
+static bool is_text(V r) {
+  if (kind(r) == K_STRLIT) return true;
   if (kind(r) != K_TUPLE || !tup_nokinds(as_tup(r))) return false;
   TupT *t = as_tup(r);
   for (uint32_t i = 0; i < t->len; i++)
-    if (kind(t->e[i]) != K_STRLIT) return false;
-  for (uint32_t i = 0; i < t->len; i++) str_emit(as_str(t->e[i]));
+    if (!is_text(t->e[i])) return false;
   return true;
+}
+
+// written to f (NULL: the output), piece by piece
+static void write_text_v(V r, FILE *f) {
+  if (kind(r) == K_STRLIT) {
+    Str *s = as_str(r);
+    if (!f) {
+      str_emit(s);
+      return;
+    }
+    const uint16_t *d = str_d(s);
+    uint8_t buf[1 << 16];
+    for (int32_t i = 0; i < s->len;) {
+      int32_t n = s->len - i < (int32_t)sizeof buf ? s->len - i : (int32_t)sizeof buf;
+      for (int32_t j = 0; j < n; j++) buf[j] = (uint8_t)d[i + j];
+      fwrite(buf, 1, (size_t)n, f);
+      i += n;
+    }
+    return;
+  }
+  TupT *t = as_tup(r);
+  for (uint32_t i = 0; i < t->len; i++) write_text_v(t->e[i], f);
+}
+
+// --units DIR: each element of the result (a unit, itself a text) is written
+// to DIR/<index>.ll
+static void write_units(V r, const char *dir) {
+  if (kind(r) != K_TUPLE) die("--units: the result is no tuple of units");
+  TupT *t = as_tup(r);
+  for (uint32_t i = 0; i < t->len; i++) {
+    char path[4096];
+    snprintf(path, sizeof path, "%s/%u.ll", dir, i);
+    FILE *f = fopen(path, "wb");
+    if (!f) die("cannot write %s", path);
+    write_text_v(t->e[i], f);
+    fclose(f);
+  }
 }
 
 static void run(void) {
   if (g_argc < 2) usage();
   const char *cmd = g_argv[1];
-  const char *entry = "Main", *out_path = NULL;
+  const char *entry = "Main", *out_path = NULL, *units_dir = NULL;
   bool stats = false, bytes_mode = false;
   // arguments: 0 marks a file to read once the mode is known
   V inputs[64];
@@ -188,6 +221,7 @@ static void run(void) {
       files[ninputs] = NULL;
       inputs[ninputs++] = (V)str_of_cstr(g_argv[++i]);
     } else if (!strcmp(a, "--out") && i + 1 < g_argc) out_path = g_argv[++i];
+    else if (!strcmp(a, "--units") && i + 1 < g_argc) units_dir = g_argv[++i];
     else if (!strcmp(a, "--stats")) stats = true;
     else if (!strcmp(a, "--bytes")) bytes_mode = true;
     else usage();
@@ -236,8 +270,10 @@ static void run(void) {
     V *args = gc_alloc((size_t)(np > ninputs ? np : ninputs) * 8 + 8);
     for (int64_t k = 0; k < np; k++) args[k] = k < ninputs ? inputs[k] : V_UNKNOWN;
     V r = e->fn(args, ninputs < np ? ninputs : np);
-    if (bytes_mode && emit_pieces(r)) {
-      // (written as they are: the text, or a tuple of its pieces)
+    if (bytes_mode && units_dir && is_text(r)) {
+      write_units(r, units_dir);
+    } else if (bytes_mode && is_text(r)) {
+      write_text_v(r, NULL);
     } else {
       char *s;
       if (kind(r) == K_STRLIT) {
