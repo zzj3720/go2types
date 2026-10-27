@@ -1162,15 +1162,18 @@ V union_subtype(V *items, uint32_t n) {
 }
 
 // ---------------------------------------------------------------------------
-// Fast paths: a plain tuple against a tuple pattern of infers, types and
-// spreads of fixed tuples (`[infer H, ...infer R]`, `[...N, ...infer R]`),
+// Fast paths: a plain tuple against a tuple pattern of infers, types,
+// spreads of fixed tuples and tuple patterns (`[infer H, ...infer R]`,
+// `[...N, ...infer R]`, `[["id", infer N], ...infer R]`),
 // and a string literal against a template of infers (`${infer C}${infer R}`),
 // bind the slots directly. -1: not such a case, otherwise as rt_decide.
 
-enum { FI_INFER, FI_VAL, FI_SPREAD, FI_REST };
+enum { FI_INFER, FI_VAL, FI_SPREAD, FI_REST, FI_SUB };
 typedef struct { int kind; const PatD *p; TupT *sp; } FItem;
 
+// (seen holds up to 64 slots)
 static bool fast_slot_new(int64_t *seen, int *ns, int64_t slot) {
+  if (*ns >= 64) return false;
   for (int i = 0; i < *ns; i++)
     if (seen[i] == slot) return false;
   seen[(*ns)++] = slot;
@@ -1179,15 +1182,18 @@ static bool fast_slot_new(int64_t *seen, int *ns, int64_t slot) {
 
 static inline bool elem_ok(V s, V t) { return s == t || is_assignable(s, t); }
 
-static int64_t fast_tuple(TupT *t, const PatD *pat, V *env) {
+// a phase of matching t against pat: 0 lays the items out, checks lengths
+// and spreads and binds the slots; 1 checks the types and the constraints
+// (which may read slots bound anywhere in the pattern). Elements that are
+// tuple patterns themselves are matched the same way (seen: the slots of the
+// whole pattern, each bound once).
+static int64_t fast_tuple_phase(TupT *t, const PatD *pat, V *env, int64_t *seen, int *ns, int phase) {
   int64_t np = pat->n;
   if (np > 16) return -1;
   int fixed = tup_fixed_len(t);
   if (fixed < 0) return -1;
   if (tup_ro(t) && !pat->ro) return 1;
   FItem it[16];
-  int64_t seen[16];
-  int ns = 0;
   int64_t rest_at = -1, need = 0;
   for (int64_t i = 0; i < np; i++) {
     const PatD *e = pat->elems[i];
@@ -1197,7 +1203,7 @@ static int64_t fast_tuple(TupT *t, const PatD *pat, V *env) {
     if (k == E_OPT) return -1;
     if (k == E_REST) {
       if (e->kind == P_INFER) {
-        if (rest_at >= 0 || !fast_slot_new(seen, &ns, e->slot)) return -1;
+        if (rest_at >= 0 || (phase == 0 && !fast_slot_new(seen, ns, e->slot))) return -1;
         it[i].kind = FI_REST;
         rest_at = i;
       } else if (e->kind == P_CODE) {
@@ -1210,11 +1216,14 @@ static int64_t fast_tuple(TupT *t, const PatD *pat, V *env) {
         return -1;
       }
     } else if (e->kind == P_INFER) {
-      if (!fast_slot_new(seen, &ns, e->slot)) return -1;
+      if (phase == 0 && !fast_slot_new(seen, ns, e->slot)) return -1;
       it[i].kind = FI_INFER;
       need++;
     } else if (e->kind == P_CODE) {
       it[i].kind = FI_VAL;
+      need++;
+    } else if (e->kind == P_TUPLE) {
+      it[i].kind = FI_SUB;
       need++;
     } else {
       return -1;
@@ -1240,25 +1249,40 @@ static int64_t fast_tuple(TupT *t, const PatD *pat, V *env) {
     }
     pos[rest_at] = rest_from;
   }
-  // spreads first (their elements are known), then the bindings, then the
-  // types (which may read them), then the constraints
-  for (int64_t i = 0; i < np; i++) {
-    if (it[i].kind != FI_SPREAD) continue;
-    TupT *sp = it[i].sp;
-    const V *src = t->e + pos[i];
-    V tu = tup_uni(t), su = tup_uni(sp);
-    if (tu && su) {
-      if (!elem_ok(tu, su)) return 1;
-    } else if (src != sp->e)
-      for (uint32_t j = 0; j < sp->len; j++)
-        if (!elem_ok(src[j], sp->e[j])) return 1;
+  if (phase == 0) {
+    // spreads first (their elements are known), then the bindings
+    for (int64_t i = 0; i < np; i++) {
+      if (it[i].kind != FI_SPREAD) continue;
+      TupT *sp = it[i].sp;
+      const V *src = t->e + pos[i];
+      V tu = tup_uni(t), su = tup_uni(sp);
+      if (tu && su) {
+        if (!elem_ok(tu, su)) return 1;
+      } else if (src != sp->e)
+        for (uint32_t j = 0; j < sp->len; j++)
+          if (!elem_ok(src[j], sp->e[j])) return 1;
+    }
+    for (int64_t i = 0; i < np; i++) {
+      if (it[i].kind == FI_INFER) env[it[i].p->slot] = t->e[pos[i]];
+      else if (it[i].kind == FI_REST) env[it[i].p->slot] = tup_slice(t, (uint32_t)rest_from, (uint32_t)p);
+      else if (it[i].kind == FI_SUB) {
+        // (an element that is no tuple: the general case decides)
+        V v = t->e[pos[i]];
+        if ((v & 3) || kind(v) != K_TUPLE) return -1;
+        int64_t r = fast_tuple_phase(as_tup(v), it[i].p, env, seen, ns, 0);
+        if (r != 0) return r;
+      }
+    }
+    return 0;
   }
+  // then the types (which may read the slots), then the constraints
   for (int64_t i = 0; i < np; i++) {
-    if (it[i].kind == FI_INFER) env[it[i].p->slot] = t->e[pos[i]];
-    else if (it[i].kind == FI_REST) env[it[i].p->slot] = tup_slice(t, (uint32_t)rest_from, (uint32_t)p);
-  }
-  for (int64_t i = 0; i < np; i++)
     if (it[i].kind == FI_VAL && !elem_ok(t->e[pos[i]], pcode(it[i].p, env))) return 1;
+    if (it[i].kind == FI_SUB) {
+      int64_t r = fast_tuple_phase(as_tup(t->e[pos[i]]), it[i].p, env, seen, ns, 1);
+      if (r != 0) return r;
+    }
+  }
   for (int64_t i = 0; i < np; i++) {
     const PatD *e = it[i].p;
     if ((it[i].kind == FI_INFER || it[i].kind == FI_REST) && e->code &&
@@ -1266,6 +1290,13 @@ static int64_t fast_tuple(TupT *t, const PatD *pat, V *env) {
       return 1;
   }
   return 0;
+}
+
+static int64_t fast_tuple(TupT *t, const PatD *pat, V *env) {
+  int64_t seen[64];
+  int ns = 0;
+  int64_t r = fast_tuple_phase(t, pat, env, seen, &ns, 0);
+  return r != 0 ? r : fast_tuple_phase(t, pat, env, seen, &ns, 1);
 }
 
 bool match_template(Str *s, Str **texts, uint32_t ntexts, Str **pieces);
