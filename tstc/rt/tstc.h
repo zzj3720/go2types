@@ -128,7 +128,10 @@ static inline V mk_bool(bool b) { return b ? V_TRUE : V_FALSE; }
 // append-only buffer. A view that ends at the end of its buffer appends in
 // place (nobody can observe code units past a view's end).
 
-typedef struct { int32_t used, cap; uint16_t *d; } StrBuf;  // cap < 0: static
+// cap < 0: static (and no lo, first: static buffers end at d); otherwise
+// code units [lo, cap) of d are allocated, [first, used) taken by views: a
+// view that starts at first prepends in place too
+typedef struct { int32_t used, cap; uint16_t *d; int32_t lo, first; } StrBuf;
 typedef struct { uint32_t tag, hash; int32_t start, len; StrBuf *buf; } Str;
 
 static inline const uint16_t *str_d(const Str *s) { return s->buf->d + s->start; }

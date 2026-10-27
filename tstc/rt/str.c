@@ -133,20 +133,50 @@ Str *str_slice(Str *s, int32_t from, int32_t to) {
   return r;
 }
 
+// a string of n code units with room for front more before it and back more
+// after it
+static Str *str_with_room(int32_t front, int32_t n, int32_t back) {
+  StrWithBuf *x = gc_alloc(sizeof(StrWithBuf));
+  int64_t cap = (int64_t)n + back;
+  uint16_t *blk = gc_alloc_atomic((size_t)(front + cap) * 2);
+  x->b.d = blk + front;
+  x->b.lo = -front;
+  x->b.first = 0;
+  x->b.cap = (int32_t)cap;
+  x->b.used = n;
+  x->s.tag = K_STRLIT;
+  x->s.buf = &x->b;
+  x->s.len = n;
+  return &x->s;
+}
+
+// (a room of as much again, within int32 code units)
+static int32_t room_for(int64_t n) { return n > INT32_MAX / 2 ? (int32_t)(INT32_MAX - n) : (int32_t)n; }
+
+// Joined: in place after a when a ends its buffer, or before b when b
+// begins its buffer; otherwise a buffer of their own with room on the side
+// the longer one is (text built from either end appends in place)
 Str *str_concat(Str *a, Str *b) {
   if (b->len == 0) return a;
   if (a->len == 0) return b;
-  int32_t n = a->len + b->len;
+  int64_t n64 = (int64_t)a->len + b->len;
+  if (n64 > INT32_MAX) die("string too long");
+  int32_t n = (int32_t)n64;
   StrBuf *buf = a->buf;
   if (buf->cap >= 0 && a->start + a->len == buf->used) {
-    int32_t need = a->start + n;
+    int64_t need = (int64_t)a->start + n;
+    if (need > INT32_MAX) die("string too long");
     if (need > buf->cap) {
-      int32_t nc = need * 2;
-      buf->d = gc_realloc_atomic(buf->d, (size_t)buf->used * 2, (size_t)nc * 2);
-      buf->cap = nc;
+      int64_t nc = need + room_for(need);
+      // (the units in use move, with the room before them)
+      uint16_t *blk = gc_alloc_atomic((size_t)(nc - buf->lo) * 2);
+      uint16_t *d = blk - buf->lo;
+      memcpy(d + buf->first, buf->d + buf->first, (size_t)(buf->used - buf->first) * 2);
+      buf->d = d;
+      buf->cap = (int32_t)nc;
     }
     memcpy(buf->d + buf->used, str_d(b), (size_t)b->len * 2);
-    buf->used = need;
+    buf->used = (int32_t)need;
     Str *r = gc_alloc(sizeof(Str));
     r->tag = K_STRLIT;
     r->buf = buf;
@@ -154,11 +184,20 @@ Str *str_concat(Str *a, Str *b) {
     r->len = n;
     return r;
   }
-  Str *r = str_with_buf(n * 2);
+  StrBuf *bb = b->buf;
+  if (bb->cap >= 0 && b->start == bb->first && (int64_t)b->start - a->len >= bb->lo) {
+    bb->first = b->start - a->len;
+    memcpy(bb->d + bb->first, str_d(a), (size_t)a->len * 2);
+    Str *r = gc_alloc(sizeof(Str));
+    r->tag = K_STRLIT;
+    r->buf = bb;
+    r->start = bb->first;
+    r->len = n;
+    return r;
+  }
+  Str *r = a->len < b->len ? str_with_room(room_for(n), n, 0) : str_with_room(0, n, room_for(n));
   memcpy(r->buf->d, str_d(a), (size_t)a->len * 2);
   memcpy(r->buf->d + a->len, str_d(b), (size_t)b->len * 2);
-  r->buf->used = n;
-  r->len = n;
   return r;
 }
 
