@@ -12,6 +12,7 @@ enum { R_ASSIGN, R_STRICT, R_IDENT };
 enum { IS_NONE = 0, IS_SOURCE = 1, IS_TARGET = 2 };
 
 static bool related(V s, V t, int R, int ist);
+static bool tuple_elems_related(TupT *s, V el, int R);
 static bool tpl_matched(V s, TplT *t, int R);
 static bool member_of_strmap(V s, V t);
 static bool sigs_related(V s, V t, bool ctor, int R, int ist);
@@ -1273,6 +1274,7 @@ static bool structured_worker(V s, V t, int R, int ist) {
   }
   if (kt == K_ARRAY && ((((ArrT *)t)->ro && is_array_or_tuple(s)) || is_mutable_tuple(s))) {
     if (R == R_IDENT) return false;
+    if (ks == K_TUPLE && tup_nokinds(as_tup(s))) return tuple_elems_related(as_tup(s), ((ArrT *)t)->el, R);
     return related(num_index_of(s), ((ArrT *)t)->el, R, IS_NONE);
   }
   if (R == R_IDENT) {
@@ -1458,6 +1460,34 @@ static bool recursive(V s, V t, int R, int ist) {
 V reduced_type(V t);
 
 // isRelatedTo
+// A tuple of required elements against an array: each element against its
+// element type (as their union is). The rests a list is taken apart into
+// (`[infer H, ...infer R extends T[]]`, step by step) are views of the same
+// elements: which suffix of them is known to be related is remembered (by
+// the elements' end and the target, until the next collection), so that
+// each step checks only what it has not seen.
+typedef struct { const V *end, *from; V el; int R; size_t epoch; } SufEnt;
+static SufEnt suf_cache[256];
+
+static bool tuple_elems_related(TupT *s, V el, int R) {
+  const V *end = s->e + s->len;
+  SufEnt *c = &suf_cache[(((uintptr_t)end >> 3) ^ ((uintptr_t)el >> 3) * 31) & 255];
+  bool hit = c->end == end && c->el == el && c->R == R && c->epoch == gc_collections;
+  const V *stop = hit ? c->from : end;
+  if (hit && s->e >= c->from) return true;
+  for (const V *p = s->e; p < stop; p++)
+    if (!related(*p, el, R, IS_NONE)) return false;
+  // (the elements are s's, live: the entry holds past a collection during
+  // the checks, and is recorded in the epoch after it)
+  size_t ep = gc_collections;
+  c->end = end;
+  c->from = s->e;
+  c->el = el;
+  c->R = R;
+  c->epoch = ep;
+  return true;
+}
+
 static bool related(V s, V t, int R, int ist) {
   if (s == t) return true;
   int ks = kind(s), kt = kind(t);
