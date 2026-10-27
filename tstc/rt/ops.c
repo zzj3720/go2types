@@ -890,6 +890,7 @@ typedef struct {
 static V mapped_keys(const MappedD *m, VA *keys, V mods, V *env) {
   VA props;  // MProp*
   va_init(&props);
+  NameIx pix = {0};  // their names
   OB b;
   ob_init(&b);
   for (uint32_t ki = 0; ki < keys->n; ki++) {
@@ -907,10 +908,10 @@ static V mapped_keys(const MappedD *m, VA *keys, V mods, V *env) {
       if (usable_as_prop_name(nm)) {
         Str *n;
         if (!key_name(nm, &n)) continue;  // (symbol-named properties: not represented)
-        MProp *mp = NULL;
-        for (uint32_t q = 0; q < props.n && !mp; q++)
-          if (str_eq(((MProp *)props.d[q])->name, n)) mp = (MProp *)props.d[q];
+        int32_t q = nix_get(&pix, n);
+        MProp *mp = q >= 0 ? (MProp *)props.d[q] : NULL;
         if (!mp) {
+          nix_put(&pix, n, (int32_t)props.n);
           mp = gc_alloc(sizeof(MProp));
           mp->name = n;
           mp->name_ty = nm;

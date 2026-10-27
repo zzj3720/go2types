@@ -354,10 +354,49 @@ Prop *obj_get(ObjT *o, Str *name) {
 
 void ob_init(OB *b) { memset(b, 0, sizeof *b); }
 
-static int32_t ob_find(OB *b, Str *name) {
-  for (uint32_t i = 0; i < b->n; i++)
-    if (str_eq(b->p[i].name, name)) return (int32_t)i;
+int32_t nix_get(NameIx *x, Str *name) {
+  if (!x->cap) return -1;
+  uint32_t k = str_hash(name) & (x->cap - 1);
+  while (x->k[k]) {
+    if (str_eq(x->k[k], name)) return x->v[k];
+    k = (k + 1) & (x->cap - 1);
+  }
   return -1;
+}
+
+void nix_put(NameIx *x, Str *name, int32_t i) {
+  if ((x->n + 1) * 2 > x->cap) {
+    NameIx y = {0};
+    y.cap = x->cap ? x->cap * 2 : 32;
+    y.k = gc_alloc((size_t)y.cap * sizeof(Str *));
+    y.v = gc_alloc_atomic((size_t)y.cap * 4);
+    for (uint32_t j = 0; j < x->cap; j++)
+      if (x->k[j]) nix_put(&y, x->k[j], x->v[j]);
+    *x = y;
+  }
+  uint32_t k = str_hash(name) & (x->cap - 1);
+  while (x->k[k]) {
+    if (str_eq(x->k[k], name)) {
+      x->v[k] = i;
+      return;
+    }
+    k = (k + 1) & (x->cap - 1);
+  }
+  x->k[k] = name;
+  x->v[k] = i;
+  x->n++;
+}
+
+// (the last property of the name; past a few, through the index of the
+// names, brought up to date with the properties added since)
+int32_t ob_find(OB *b, Str *name) {
+  if (b->n <= 16) {
+    for (int32_t i = (int32_t)b->n - 1; i >= 0; i--)
+      if (str_eq(b->p[i].name, name)) return i;
+    return -1;
+  }
+  for (; b->hn < b->n; b->hn++) nix_put(&b->names, b->p[b->hn].name, (int32_t)b->hn);
+  return nix_get(&b->names, name);
 }
 
 // may t be undefined or void (maybeTypeOfKind)
@@ -1193,9 +1232,7 @@ V merge_objects(ObjT **objs, uint32_t n) {
     ObjT *o = objs[k];
     for (uint32_t i = 0; i < o->np; i++) {
       Prop *p = &o->props[i];
-      int32_t j = -1;
-      for (uint32_t q = 0; q < b.n; q++)
-        if (str_eq(b.p[q].name, p->name)) j = (int32_t)q;
+      int32_t j = ob_find(&b, p->name);
       if (j >= 0) {
         Prop *prev = &b.p[j];
         V it[2] = {prop_value(prev), prop_value(p)};

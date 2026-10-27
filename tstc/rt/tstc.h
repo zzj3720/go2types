@@ -292,7 +292,14 @@ uint64_t fresh_seq(void);
 V prop_value(Prop *p);
 Prop *obj_get(ObjT *o, Str *name);
 // object builder
-typedef struct { Prop *p; uint32_t n, cap; IndexSig *ix; uint32_t ni, icap; FnT **c; uint32_t nc, ccap; } OB;
+// a table of names to indices (open addressing), for builders that would
+// otherwise look each name up in all those before it
+typedef struct { Str **k; int32_t *v; uint32_t n, cap; } NameIx;
+int32_t nix_get(NameIx *x, Str *name);
+void nix_put(NameIx *x, Str *name, int32_t i);
+// object builder (names: an index of the first hn properties' names)
+typedef struct { Prop *p; uint32_t n, cap; IndexSig *ix; uint32_t ni, icap; FnT **c; uint32_t nc, ccap; NameIx names; uint32_t hn; } OB;
+int32_t ob_find(OB *b, Str *name);
 void ob_init(OB *b);
 // adds or replaces a property; keep_seq keeps the order of a replaced one
 void ob_prop(OB *b, Str *name, V ty, Thunk th, V *env, bool opt, bool ro, bool numeric, bool keep_seq);
