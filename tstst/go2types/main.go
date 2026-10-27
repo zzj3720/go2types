@@ -11,6 +11,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go/build"
 	"go/constant"
 	"go/token"
 	"go/types"
@@ -732,7 +733,9 @@ func (c *compiler) typeID(t types.Type) int {
 func (c *compiler) fail(pos token.Pos, format string, args ...any) string {
 	msg := fmt.Sprintf(format, args...)
 	if pos.IsValid() {
-		msg = c.prog.Fset.Position(pos).String() + ": " + msg
+		pp := c.prog.Fset.Position(pos)
+		pp.Filename = buildPath(pp.Filename)
+		msg = pp.String() + ": " + msg
 	}
 	c.errs = append(c.errs, msg)
 	return fmt.Sprintf("g.panic<%s>", tsString("unsupported: "+msg))
@@ -1218,6 +1221,39 @@ func sanitize(s string) string {
 // Values
 
 // the path a program sees for a source file: tsc's files are below /tsc
+// a source file as the output names it, the same on every machine: the
+// program's own under -C as sourcePath has them, Go's under GOROOT/src and
+// modules' as their module path and version
+func buildPath(name string) string {
+	if *dir != "" {
+		if abs, err := filepath.Abs(*dir); err == nil {
+			if rel, err := filepath.Rel(abs, name); err == nil && !strings.HasPrefix(rel, "..") {
+				return filepath.ToSlash(rel)
+			}
+		}
+	}
+	for _, r := range [][2]string{{filepath.Join(build.Default.GOROOT, "src"), "GOROOT/src"}, {modCache(), ""}} {
+		if r[0] == "" {
+			continue
+		}
+		if rel, err := filepath.Rel(r[0], name); err == nil && !strings.HasPrefix(rel, "..") {
+			return strings.TrimPrefix(r[1]+"/"+filepath.ToSlash(rel), "/")
+		}
+	}
+	return filepath.ToSlash(name)
+}
+
+// the module cache (go env GOMODCACHE)
+func modCache() string {
+	if m := os.Getenv("GOMODCACHE"); m != "" {
+		return m
+	}
+	if p := os.Getenv("GOPATH"); p != "" {
+		return filepath.Join(filepath.SplitList(p)[0], "pkg", "mod")
+	}
+	return filepath.Join(build.Default.GOPATH, "pkg", "mod")
+}
+
 func sourcePath(name string) string {
 	if *dir != "" {
 		if abs, err := filepath.Abs(*dir); err == nil {
