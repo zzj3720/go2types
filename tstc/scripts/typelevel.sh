@@ -1,7 +1,7 @@
 #!/bin/sh
 # tstc in type-level TypeScript (the tstst repository's tstc/tstc.ts, beside
 # this checkout): built by this tstc, it compiles the programs of bench/tl
-# and go2types programs with the lib (TL_PROGS, of tstst/go2types/tscdata),
+# and go2types programs with the lib (tstst/go2types/tscdata, or TL_PROGS),
 # whose results must be this tstc's, then itself, to a fixed point.
 #   sh scripts/typelevel.sh        (from tstc/, after scripts/ci.sh)
 cd "$(dirname "$0")/.."
@@ -23,7 +23,7 @@ done
 # go2types' tscdata programs with the lib (packs of files): their output must
 # be what this tstc's build of them prints
 LIB=$(cd ../../tstst && pwd)/lib
-for p in ${TL_PROGS:-hello}; do
+for p in ${TL_PROGS:-$(ls ../tstst/go2types/tscdata)}; do
   d=$O/g2t-$p; rm -rf $d; mkdir -p $d; cp -R $LIB $d/lib
   (cd ../tstst/go2types && GOWORK=off go run . -o $d/prog.ts -lib ./lib/pure ./tscdata/$p > $d/g2t.log 2>&1) || { echo "$p: go2types failed"; fail=1; continue; }
   (cd $d && for f in prog.ts lib/pure/*.ts; do printf '\000%s\000' "$f"; cat "$f"; done > prog.pack)
