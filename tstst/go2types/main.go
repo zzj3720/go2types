@@ -11,7 +11,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"go/build"
 	"go/constant"
 	"go/token"
 	"go/types"
@@ -730,11 +729,26 @@ func (c *compiler) typeID(t types.Type) int {
 	return id
 }
 
+// a source file as the output names it: its package's path and its name,
+// the same wherever the sources are (and for the self-hosted go2types, which
+// reads them from a pack)
+func (c *compiler) filePath(pos token.Pos, name string) string {
+	for _, p := range c.prog.AllPackages() {
+		sc := p.Pkg.Scope()
+		for i := 0; i < sc.NumChildren(); i++ {
+			if sc.Child(i).Contains(pos) {
+				return p.Pkg.Path() + "/" + filepath.Base(name)
+			}
+		}
+	}
+	return filepath.Base(name)
+}
+
 func (c *compiler) fail(pos token.Pos, format string, args ...any) string {
 	msg := fmt.Sprintf(format, args...)
 	if pos.IsValid() {
 		pp := c.prog.Fset.Position(pos)
-		pp.Filename = buildPath(pp.Filename)
+		pp.Filename = c.filePath(pos, pp.Filename)
 		msg = pp.String() + ": " + msg
 	}
 	c.errs = append(c.errs, msg)
@@ -1221,39 +1235,6 @@ func sanitize(s string) string {
 // Values
 
 // the path a program sees for a source file: tsc's files are below /tsc
-// a source file as the output names it, the same on every machine: the
-// program's own under -C as sourcePath has them, Go's under GOROOT/src and
-// modules' as their module path and version
-func buildPath(name string) string {
-	if *dir != "" {
-		if abs, err := filepath.Abs(*dir); err == nil {
-			if rel, err := filepath.Rel(abs, name); err == nil && !strings.HasPrefix(rel, "..") {
-				return filepath.ToSlash(rel)
-			}
-		}
-	}
-	for _, r := range [][2]string{{filepath.Join(build.Default.GOROOT, "src"), "GOROOT/src"}, {modCache(), ""}} {
-		if r[0] == "" {
-			continue
-		}
-		if rel, err := filepath.Rel(r[0], name); err == nil && !strings.HasPrefix(rel, "..") {
-			return strings.TrimPrefix(r[1]+"/"+filepath.ToSlash(rel), "/")
-		}
-	}
-	return filepath.ToSlash(name)
-}
-
-// the module cache (go env GOMODCACHE)
-func modCache() string {
-	if m := os.Getenv("GOMODCACHE"); m != "" {
-		return m
-	}
-	if p := os.Getenv("GOPATH"); p != "" {
-		return filepath.Join(filepath.SplitList(p)[0], "pkg", "mod")
-	}
-	return filepath.Join(build.Default.GOPATH, "pkg", "mod")
-}
-
 func sourcePath(name string) string {
 	if *dir != "" {
 		if abs, err := filepath.Abs(*dir); err == nil {
