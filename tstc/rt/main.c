@@ -154,6 +154,21 @@ static void str_emit(Str *s) {
   free(b);
 }
 
+// a string, or a tuple of strings (pieces of a text too long to join),
+// written; false when r is neither
+static bool emit_pieces(V r) {
+  if (kind(r) == K_STRLIT) {
+    str_emit(as_str(r));
+    return true;
+  }
+  if (kind(r) != K_TUPLE || !tup_nokinds(as_tup(r))) return false;
+  TupT *t = as_tup(r);
+  for (uint32_t i = 0; i < t->len; i++)
+    if (kind(t->e[i]) != K_STRLIT) return false;
+  for (uint32_t i = 0; i < t->len; i++) str_emit(as_str(t->e[i]));
+  return true;
+}
+
 static void run(void) {
   if (g_argc < 2) usage();
   const char *cmd = g_argv[1];
@@ -221,8 +236,8 @@ static void run(void) {
     V *args = gc_alloc((size_t)(np > ninputs ? np : ninputs) * 8 + 8);
     for (int64_t k = 0; k < np; k++) args[k] = k < ninputs ? inputs[k] : V_UNKNOWN;
     V r = e->fn(args, ninputs < np ? ninputs : np);
-    if (kind(r) == K_STRLIT && bytes_mode) {
-      str_emit(as_str(r));
+    if (bytes_mode && emit_pieces(r)) {
+      // (written as they are: the text, or a tuple of its pieces)
     } else {
       char *s;
       if (kind(r) == K_STRLIT) {
