@@ -278,6 +278,7 @@ typedef struct {
   int32_t *hidx;    // open addressing over props (hcap slots) when np > 8
   IndexSig *index;
   FnT **calls;
+  V keys;           // its keyof, once asked (getIndexType's cache)
 } ObjT;
 typedef struct {
   uint32_t tag, nslots;

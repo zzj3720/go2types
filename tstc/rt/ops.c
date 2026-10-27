@@ -333,6 +333,9 @@ V keyof_ty(V t) {
     V it[3] = {V_STRING, V_NUMBER, V_SYMBOL};
     return mk_union(it, 3);
   }
+  case K_OBJ:
+    if (as_obj(t)->keys) return as_obj(t)->keys;
+    break;
   default: break;
   }
   Members m;
@@ -343,7 +346,9 @@ V keyof_ty(V t) {
     va_push(&items, k);
     if (k == V_STRING) va_push(&items, V_NUMBER);
   }
-  return mk_union(items.d, items.n);
+  V r = mk_union(items.d, items.n);
+  if (kind(t) == K_OBJ) as_obj(t)->keys = r;
+  return r;
 }
 
 // ---------------------------------------------------------------------------
