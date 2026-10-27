@@ -30,8 +30,35 @@ static inline uint64_t mix(uint64_t h, uint64_t x) {
   return (h ^ x) * UINT64_C(0xBF58476D1CE4E5B9) + 0x94D049BB133111EBu;
 }
 
+static uint64_t vhash_of(V v, int64_t *budget);
+
+// The hashes of composite values, by object, until the next collection (an
+// object is immutable while it lives): the same subtree passed on again (a
+// walk over a big tree, each step hashing the node it is given) is hashed
+// once. The cost recorded is what hashing it read, charged again on a hit,
+// so that what is too large to hash stays so.
+typedef struct { V v; size_t epoch; uint64_t h; int64_t cost; } HEnt;
+#define HCACHE (1 << 16)
+static HEnt hcache[HCACHE];
+
 // a hash of v; *budget below zero: too large, or not to be memoized
 static uint64_t vhash(V v, int64_t *budget) {
+  int k = (v & 3) ? -1 : kind(v);
+  if (k != K_TUPLE && k != K_UNION && k != K_INTER && k != K_TPL) return vhash_of(v, budget);
+  HEnt *e = &hcache[(v >> 4) * UINT64_C(0x9E3779B97F4A7C15) >> 48];
+  if (e->v != v || e->epoch != gc_collections) {
+    int64_t b = MEMO_BUDGET;
+    uint64_t h = vhash_of(v, &b);
+    e->v = v;
+    e->epoch = gc_collections;
+    e->h = h;
+    e->cost = b < 0 ? MEMO_BUDGET + 1 : MEMO_BUDGET - b;
+  }
+  *budget -= e->cost;
+  return *budget < 0 ? 0 : e->h;
+}
+
+static uint64_t vhash_of(V v, int64_t *budget) {
   if (--*budget < 0) return 0;
   int k = kind(v);
   if (k == K_STORE || k == K_MAP || k == K_VEC) {
