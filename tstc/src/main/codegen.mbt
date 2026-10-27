@@ -759,7 +759,7 @@ fn ty_const(t : Ty) -> String {
       let items = ms.map(ty_const)
       let sb = StringBuilder::new()
       sb.write_string(
-        " = hidden constant { i32, i32, [\{ms.length()} x i64] } { i32 23, i32 \{ms.length()}, [\{ms.length()} x i64] [",
+        " = hidden constant { i32, i32, ptr, [\{ms.length()} x i64] } { i32 23, i32 \{ms.length()}, ptr null, [\{ms.length()} x i64] [",
       )
       for i in 0..<items.length() {
         if i > 0 {
