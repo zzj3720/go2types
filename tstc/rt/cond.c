@@ -1306,8 +1306,11 @@ static int64_t fast_tpl(Str *s, const PatD *pat, V *env) {
   if (np > 16) return -1;
   int64_t seen[16];
   int ns = 0;
+  // (a placeholder of type string, `${string}`, matches as an infer does,
+  // binding nothing)
   for (int64_t i = 0; i < np; i++) {
     const PatD *e = pat->elems[i];
+    if (e->kind == P_CODE && pcode(e, env) == V_STRING) continue;
     if (e->kind != P_INFER || !fast_slot_new(seen, &ns, e->slot)) return -1;
   }
   Str *pieces[17];
@@ -1318,6 +1321,7 @@ static int64_t fast_tpl(Str *s, const PatD *pat, V *env) {
   }
   for (int64_t i = 0; i < np; i++) {
     const PatD *e = pat->elems[i];
+    if (e->kind == P_CODE) continue;
     if (!e->code) {
       env[e->slot] = (V)pieces[i];
     } else {

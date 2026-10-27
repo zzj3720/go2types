@@ -43,7 +43,9 @@ static uint64_t vhash(V v, int64_t *budget) {
   case K_INT: return mix(2, (uint64_t)int_val(v));
   case K_STRLIT: {
     Str *s = as_str(v);
+    // (a text too long for the budget is not hashed at all)
     *budget -= s->len / 16;
+    if (*budget < 0) return 0;
     return mix(3, str_hash(s));
   }
   case K_NUMLIT: {
