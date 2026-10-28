@@ -11,6 +11,8 @@ V rt_union2(V a, V b) { return mk_union2(a, b); }
 V rt_tuplev(const V *v, int64_t n) { return mk_tuple(v, (uint32_t)n); }
 V rt_tuple2(V a, V b) { return mk_tuple2(a, b); }
 V rt_tuple1(V a) { return mk_tuple1(a); }
+// a tuple of n required elements (as written: no descriptor)
+V rt_tuplen(const V *e, int64_t n) { return mk_tuple(e, (uint32_t)n); }
 V rt_empty_tuple(void) { return empty_tuple; }
 V rt_tupled(const TupD *d, V *vals) { return rt_tuple(d, vals); }
 V rt_array(V el, int64_t ro) { return mk_array(el, ro != 0); }
